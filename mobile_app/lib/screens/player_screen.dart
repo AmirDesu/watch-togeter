@@ -303,7 +303,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     int activeSpuTrack = -1;
     try {
       spuTracks = await _vlcController.getSpuTracks();
-      activeSpuTrack = await _vlcController.getSpuTrack();
+      activeSpuTrack = (await _vlcController.getSpuTrack()) ?? -1;
     } catch (_) {}
 
     if (!mounted) return;
