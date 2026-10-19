@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'player_screen.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'chat_room_screen.dart';
+import 'tetris_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({Key? key}) : super(key: key);
@@ -23,15 +26,122 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _selectedSubtitleName;
   bool _isUrlMode = false;
 
+  // Easter Egg State
+  int _easterEggTapCount = 0;
+  Timer? _easterEggResetTimer;
+  bool _isTetrisUnlocked = false;
+
   @override
   void initState() {
     super.initState();
     _usernameController.text = 'کاربر هم‌تماشا';
     _roomIdController.text = 'room-${DateTime.now().millisecondsSinceEpoch % 10000}';
+    _checkTetrisUnlockStatus();
+  }
+
+  Future<void> _checkTetrisUnlockStatus() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (mounted) {
+        setState(() {
+          _isTetrisUnlocked = prefs.getBool('tetris_easter_egg_unlocked') ?? false;
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _handleLogoTap() async {
+    _easterEggTapCount++;
+    _easterEggResetTimer?.cancel();
+    _easterEggResetTimer = Timer(const Duration(seconds: 3), () {
+      _easterEggTapCount = 0;
+    });
+
+    if (_easterEggTapCount >= 5) {
+      _easterEggTapCount = 0;
+      _easterEggResetTimer?.cancel();
+
+      // Persist unlock state
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setBool('tetris_easter_egg_unlocked', true);
+        if (mounted) {
+          setState(() {
+            _isTetrisUnlocked = true;
+          });
+        }
+      } catch (_) {}
+
+      if (!mounted) return;
+
+      // Show Easter Egg reveal dialog
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (ctx) {
+          Future.delayed(const Duration(milliseconds: 2600), () {
+            if (Navigator.canPop(ctx)) {
+              Navigator.pop(ctx);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const TetrisScreen()),
+              );
+            }
+          });
+
+          return Dialog(
+            backgroundColor: Colors.transparent,
+            elevation: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 32),
+                decoration: BoxDecoration(
+                  gradient: const LinearGradient(
+                    colors: [Color(0xFF1E1B4B), Color(0xFF0F172A)],
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                  ),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: const Color(0xFFF43F5E).withOpacity(0.6), width: 2),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFFF43F5E).withOpacity(0.3),
+                      blurRadius: 30,
+                      spreadRadius: 4,
+                    ),
+                  ],
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: const [
+                    Icon(Icons.favorite_rounded, color: Color(0xFFF43F5E), size: 56),
+                    SizedBox(height: 20),
+                    Text(
+                      'To my little Atrisa',
+                      style: TextStyle(
+                        color: Color(0xFFFDA4AF),
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 1.5,
+                        fontFamily: 'sans-serif',
+                      ),
+                    ),
+                    SizedBox(height: 12),
+                    Text(
+                      'راز مخفی کشف شد ❤️',
+                      style: TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    }
   }
 
   Future<void> _pickVideoFile() async {
-    // Request storage / media permissions
     if (Platform.isAndroid) {
       await Permission.videos.request();
       await Permission.storage.request();
@@ -54,7 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _pickSubtitleFile() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['srt', 'vtt', 'ass'],
+      allowedExtensions: ['srt', 'vtt', 'ass', 'sub'],
       allowMultiple: false,
     );
 
@@ -85,22 +195,17 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    if (videoSource == null || videoSource.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('لطفاً یک فایل فیلم انتخاب کرده یا لینک مستقیم را وارد کنید.')),
-      );
-      return;
-    }
-
+    // Video selection is now completely OPTIONAL!
+    // If not selected, user enters ChatRoomScreen directly and receives remote video when available.
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => PlayerScreen(
+        builder: (context) => ChatRoomScreen(
           roomId: roomId,
           username: username,
-          videoPathOrUrl: videoSource,
+          initialVideoPathOrUrl: (videoSource != null && videoSource.isNotEmpty) ? videoSource : null,
           isNetworkUrl: _isUrlMode,
-          subtitlePath: _selectedSubtitlePath,
+          initialSubtitlePath: _selectedSubtitlePath,
         ),
       ),
     );
@@ -118,28 +223,80 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 20),
-                // App Logo and Title
-                Center(
-                  child: Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF6366F1).withOpacity(0.3),
-                          blurRadius: 16,
-                          offset: const Offset(0, 6),
+                // Top Action Bar with permanent Easter Egg access if discovered
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    if (_isTetrisUnlocked)
+                      InkWell(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(builder: (_) => const TetrisScreen()),
+                          );
+                        },
+                        borderRadius: BorderRadius.circular(14),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF43F5E).withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(color: const Color(0xFFF43F5E).withOpacity(0.4)),
+                          ),
+                          child: Row(
+                            children: const [
+                              Icon(Icons.favorite_rounded, color: Color(0xFFF43F5E), size: 16),
+                              SizedBox(width: 6),
+                              Text(
+                                'Atrisa\'s Tetris',
+                                style: TextStyle(color: Color(0xFFFDA4AF), fontSize: 11, fontWeight: FontWeight.bold),
+                              ),
+                            ],
+                          ),
                         ),
-                      ],
+                      )
+                    else
+                      const SizedBox.shrink(),
+
+                    // Check Update Icon
+                    IconButton(
+                      icon: const Icon(Icons.system_update_rounded, color: Color(0xFF94A3B8), size: 20),
+                      tooltip: 'بررسی آپدیت جدید',
+                      onPressed: () async {
+                        final Uri url = Uri.parse('https://github.com/amir21hack/watch-togeter/releases/latest');
+                        if (await canLaunchUrl(url)) {
+                          await launchUrl(url, mode: LaunchMode.externalApplication);
+                        }
+                      },
                     ),
-                    child: const Icon(Icons.live_tv_rounded, color: Colors.white, size: 38),
+                  ],
+                ),
+                const SizedBox(height: 8),
+
+                // App Logo (Interactive 5-tap Easter Egg trigger)
+                Center(
+                  child: GestureDetector(
+                    onTap: _handleLogoTap,
+                    child: Container(
+                      width: 76,
+                      height: 76,
+                      decoration: BoxDecoration(
+                        gradient: const LinearGradient(
+                          colors: [Color(0xFF6366F1), Color(0xFF8B5CF6)],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
+                        ),
+                        borderRadius: BorderRadius.circular(24),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF6366F1).withOpacity(0.35),
+                            blurRadius: 18,
+                            offset: const Offset(0, 6),
+                          ),
+                        ],
+                      ),
+                      child: const Icon(Icons.live_tv_rounded, color: Colors.white, size: 40),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -155,16 +312,16 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const Center(
                   child: Text(
-                    'سینمای گروهی با هسته قدرتمند VLC',
+                    'سینمای گروهی با چت‌روم زنده و هسته VLC',
                     style: TextStyle(
                       fontSize: 12,
                       color: Color(0xFF94A3B8),
                     ),
                   ),
                 ),
-                const SizedBox(height: 28),
+                const SizedBox(height: 24),
 
-                // Feature Pill: Zero Bandwidth
+                // Feature Pill
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
@@ -178,14 +335,14 @@ class _HomeScreenState extends State<HomeScreen> {
                       SizedBox(width: 8),
                       Expanded(
                         child: Text(
-                          'پخش روان تمام فرمت‌های MKV و 4K بدون مصرف اینترنت سرور',
+                          'پخش هماهنگ MKV و لینک مستقیم + اتاق گفتگوی زنده',
                           style: TextStyle(color: Color(0xFF34D399), fontSize: 11, fontWeight: FontWeight.w600),
                         ),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(height: 24),
+                const SizedBox(height: 20),
 
                 // Username & Room Input
                 Container(
@@ -241,7 +398,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 20),
 
-                // Video Source Selector
+                // Video Source Selector (OPTIONAL)
                 Container(
                   padding: const EdgeInsets.all(18),
                   decoration: BoxDecoration(
@@ -256,7 +413,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           const Text(
-                            'انتخاب ویدیو برای تماشا',
+                            'انتخاب ویدیو (اختیاری)',
                             style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
                           ),
                           TextButton(
@@ -272,14 +429,18 @@ class _HomeScreenState extends State<HomeScreen> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 10),
+                      const Text(
+                        'اگر دوستتان قبلاً ویدیو قرار داده نیازی به انتخاب ندارید و خودکار لود می‌شود.',
+                        style: TextStyle(color: Color(0xFF94A3B8), fontSize: 11),
+                      ),
+                      const SizedBox(height: 12),
 
                       if (!_isUrlMode) ...[
                         OutlinedButton.icon(
                           onPressed: _pickVideoFile,
                           icon: const Icon(Icons.folder_open_rounded, color: Color(0xFF6366F1)),
                           label: Text(
-                            _selectedVideoName ?? 'انتخاب فایل فیلم از گوشی (MKV / MP4)',
+                            _selectedVideoName ?? 'انتخاب فایل از گوشی (MKV / MP4)',
                             style: const TextStyle(color: Colors.white, fontSize: 12),
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -307,7 +468,7 @@ class _HomeScreenState extends State<HomeScreen> {
                         ),
                       ],
 
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 12),
 
                       // Optional Subtitle Picker
                       OutlinedButton.icon(
@@ -329,7 +490,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 const SizedBox(height: 28),
 
-                // Start Party Button
+                // Start / Join Party Button
                 ElevatedButton(
                   onPressed: _startParty,
                   style: ElevatedButton.styleFrom(
@@ -342,26 +503,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: const [
-                      Icon(Icons.play_circle_fill_rounded, color: Colors.white, size: 22),
+                      Icon(Icons.meeting_room_rounded, color: Colors.white, size: 22),
                       SizedBox(width: 8),
                       Text(
-                        'ورود به سینمای مشترک',
+                        'ورود به اتاق گفتگو و سینما',
                         style: TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
-                ),
-                const SizedBox(height: 12),
-                // Update Button
-                TextButton.icon(
-                  onPressed: () async {
-                    final Uri url = Uri.parse('https://github.com/amir21hack/watch-togeter/actions');
-                    if (await canLaunchUrl(url)) {
-                      await launchUrl(url, mode: LaunchMode.externalApplication);
-                    }
-                  },
-                  icon: const Icon(Icons.system_update_rounded, color: Color(0xFF94A3B8), size: 18),
-                  label: const Text('بررسی آپدیت جدید', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12)),
                 ),
                 const SizedBox(height: 20),
               ],

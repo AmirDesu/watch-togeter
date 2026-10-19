@@ -9,6 +9,8 @@ class SocketService {
   IO.Socket? socket;
   String currentRoomId = '';
   String currentUsername = '';
+  Map<String, dynamic>? currentVideoState;
+  List<dynamic> currentUsers = [];
 
   // Callbacks
   Function(double time)? onRemotePlay;
@@ -18,12 +20,19 @@ class SocketService {
   Function(ChatMessage message)? onChatMessage;
   Function(Map<String, dynamic> userProgress)? onUserProgress;
   Function(bool isConnected)? onConnectionChanged;
+  Function(Map<String, dynamic> videoState, String? by)? onVideoChanged;
+  Function(List<dynamic> users)? onUsersUpdate;
 
   void connect({
     required String serverUrl,
     required String roomId,
     required String username,
   }) {
+    // If already connected to the same room, keep it alive
+    if (socket != null && socket!.connected && currentRoomId == roomId && currentUsername == username) {
+      return;
+    }
+
     currentRoomId = roomId;
     currentUsername = username;
 
@@ -40,7 +49,7 @@ class SocketService {
     );
 
     socket!.onConnect((_) {
-      print('[Socket] Connected to server');
+      print('[Socket] Connected to server for room $roomId');
       onConnectionChanged?.call(true);
 
       socket!.emit('join-room', {
@@ -60,6 +69,10 @@ class SocketService {
     socket!.on('player-play', (data) {
       if (data != null && data['currentTime'] != null) {
         final time = (data['currentTime'] as num).toDouble();
+        if (currentVideoState != null) {
+          currentVideoState!['isPlaying'] = true;
+          currentVideoState!['currentTime'] = time;
+        }
         onRemotePlay?.call(time);
       }
     });
@@ -67,6 +80,10 @@ class SocketService {
     socket!.on('player-pause', (data) {
       if (data != null && data['currentTime'] != null) {
         final time = (data['currentTime'] as num).toDouble();
+        if (currentVideoState != null) {
+          currentVideoState!['isPlaying'] = false;
+          currentVideoState!['currentTime'] = time;
+        }
         onRemotePause?.call(time);
       }
     });
@@ -74,6 +91,9 @@ class SocketService {
     socket!.on('player-seek', (data) {
       if (data != null && data['currentTime'] != null) {
         final time = (data['currentTime'] as num).toDouble();
+        if (currentVideoState != null) {
+          currentVideoState!['currentTime'] = time;
+        }
         onRemoteSeek?.call(time);
       }
     });
@@ -83,6 +103,17 @@ class SocketService {
       if (data != null && data['seconds'] != null) {
         final sec = (data['seconds'] as num).toInt();
         onCountdown?.call(sec);
+      }
+    });
+
+    // Video Changed by host/peer
+    socket!.on('video-changed', (data) {
+      if (data != null && data is Map) {
+        if (data['videoState'] != null) {
+          currentVideoState = Map<String, dynamic>.from(data['videoState']);
+          final by = data['by']?.toString();
+          onVideoChanged?.call(currentVideoState!, by);
+        }
       }
     });
 
@@ -101,20 +132,50 @@ class SocketService {
       }
     });
 
-    // Room State (useful for syncing upon reconnect)
+    // User Joined / Left
+    socket!.on('user-joined', (userData) {
+      if (userData != null) {
+        currentUsers.add(userData);
+        onUsersUpdate?.call(List.from(currentUsers));
+      }
+    });
+
+    socket!.on('user-left', (userData) {
+      if (userData != null && userData is Map && userData['userId'] != null) {
+        currentUsers.removeWhere((u) => u is Map && u['id'] == userData['userId']);
+        onUsersUpdate?.call(List.from(currentUsers));
+      }
+    });
+
+    // Room State (useful for syncing upon entry or reconnect)
     socket!.on('room-state', (data) {
       if (data != null && data is Map) {
+        if (data['users'] != null && data['users'] is List) {
+          currentUsers = List.from(data['users']);
+          onUsersUpdate?.call(currentUsers);
+        }
+
         if (data['videoState'] != null) {
-           final vState = data['videoState'];
-           final isPlaying = vState['isPlaying'] == true;
-           final currentTime = (vState['currentTime'] as num?)?.toDouble() ?? 0.0;
-           if (isPlaying) {
-             onRemotePlay?.call(currentTime);
-           } else {
-             onRemotePause?.call(currentTime);
-           }
+          currentVideoState = Map<String, dynamic>.from(data['videoState']);
+          onVideoChanged?.call(currentVideoState!, null);
+
+          final isPlaying = currentVideoState!['isPlaying'] == true;
+          final currentTime = (currentVideoState!['currentTime'] as num?)?.toDouble() ?? 0.0;
+          if (isPlaying) {
+            onRemotePlay?.call(currentTime);
+          } else {
+            onRemotePause?.call(currentTime);
+          }
         }
       }
+    });
+  }
+
+  void sendChangeVideo({required String url, String type = 'direct'}) {
+    if (url.trim().isEmpty) return;
+    socket?.emit('change-video', {
+      'url': url.trim(),
+      'type': type,
     });
   }
 
@@ -153,5 +214,7 @@ class SocketService {
     socket?.disconnect();
     socket?.dispose();
     socket = null;
+    currentVideoState = null;
+    currentUsers = [];
   }
 }
